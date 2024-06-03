@@ -5,17 +5,22 @@
 # advantages.  In some environments, the local domain is the most trusted.
 # Copyright (C) 2020 Roger Price. GPL v3 or later at your choice.
 '''mkNUTcert: Make a self-signed TLS private key and public key for NUT'''
-mkNUTcert_version = '1.0'
+mkNUTcert_version = '1.1'
 
 # Changes
 # 2020-11-27 RP OS ID improvement
 # 2021-05-11 RP monitor -> client
+# 2022-08-18 RP Default directory becomes /etc/nut
+# 2022-08-20 RP Set ownership and permissions on output fies
+# 2022-08-20 RP Became version 1.1
 
 # We need some library stuff
-import argparse, OpenSSL, re, socket, ssl, sys, subprocess
+# Debian 11
+import argparse, grp, OpenSSL, os, pathlib, pwd, re, socket, ssl, sys, subprocess
 
 # Known to work for Python 3.4
-if sys.version_info[0] >= 3 and sys.version_info[1] >= 4 : pass
+if   sys.version_info[0] >= 4 : pass
+elif sys.version_info[0] == 3 and sys.version_info[1] >= 4 : pass
 else :
   msg = '\tMessage 50: This program requires Python version 3.4 or later.\n'\
         '\tYou are using version {}.'\
@@ -152,14 +157,23 @@ bhostname = bytes(hostname, 'utf-8')      # X509 likes bytes
 
 # Try to guess where things go in this system
 default_user, etc_dir = get_NUT_install_params()
+default_uid = pwd.getpwnam(default_user)[2]
+default_gid = pwd.getpwnam(default_user)[3]
+default_group = grp.getgrgid(default_gid)[0]
+# Default permissions
+root_perms = 0o600
+client_perms = 0o644
 
 argparser = argparse.ArgumentParser(
-  description = 'mkNUTcert.py is a Python3 script to build TLS private key, self-signed CA'
-                '  certificate and certificates for the clients that will access upsd.'
+  description = 'mkNUTcert.py is a Python3 script wbich builds a root certificate\n'
+                '  from a TLS private key and a self-signed certificate for a NUT\n'
+                '  Attachment Daemon (upsd) server, and certificates for the\n'
+                '  Management Daemon clients that will access the (upsd) server.\n'
                 '  Status: "experimental".  Intended for demonstration and experiment.',
   epilog = 'License: GPL v3 or later at your choice.\n'
            'Support: nut-upsuser mailing list.\n'
-           'Documentation: http://rogerprice.org/NUT/ConfigExamples.A5.pdf')
+           'Documentation: http://rogerprice.org/NUT/ConfigExamples.A5.pdf\n'
+           '               and RFC 9271')
 # CN commonName not used
 argparser.add_argument('-SAN', '--subjectAltName',        nargs=1,
                        default=hostname+' localhost 10.218.0.19 '+hostname+'.example.com',
@@ -192,11 +206,11 @@ argparser.add_argument('--notAfter',                      nargs=1,
                        help='Validity end time in seconds from now, default %(default)s, i.e. indefinite validity.',
                        metavar='<integer>')
 argparser.add_argument('-s', '--servercertfile',          nargs=1,
-                       default=etc_dir+'mkNUTcert/'+hostname+'.cert.pem',
+                       default=etc_dir+hostname+'.cert.pem',
                        help='File path and name for the server\'s certificate.  Default %(default)s',
                        metavar='<filename>')
 argparser.add_argument('-c', '--clientcertfile',          nargs=1,
-                       default=etc_dir+'mkNUTcert/'+hostname+'-client.cert.pem',
+                       default=etc_dir+hostname+'-client.cert.pem',
                        help='File path and name for the client\'s certificate.  Default %(default)s'\
                             ' All the clients of the upsd server use this certificate.',
                        metavar='<filename>')
@@ -275,44 +289,80 @@ CAcert_pem = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM, CAcert
 
 # Announce the files to be created
 msg = ('   I am about to create the following files.\n'\
-       '   These files will overwrite any previous files.\n'\
        ' * Private key with self-signed certificate for server in file {}\n'\
-       ' * Certificate for the client in file {}\n')\
-       .format(servercertfile, clientcertfile)
+       '   You may change this using option --servercertfile <directory>/<filename>\n'\
+       '   The file will have owner {}:{} and permissions {}\n'\
+       ' * Certificate for the client in file {}\n'\
+       '   You may change this using option --clientcertfile <directory>/<filename>\n'\
+       '   The file will have owner {}:{} and permissions {}\n')\
+       .format(servercertfile, default_user, default_group, oct(root_perms),\
+               clientcertfile, default_user, default_group, oct(client_perms))
 print(msg)
 # Ask for confirmation before overwriting any previous files
 confirm = input('Enter yes to proceed, anything else to exit: ').lower()
 if confirm != 'yes' : exit(1)
 
-# Write server private key and certificate in that orer to disk
-print('\nWriting key with self-signed certificate for server to file {} ...'.format(servercertfile))
+# Write server private key and certificate in that order to root certificate file
+# i.e. servercertfile
+print('\nWriting private key with self-signed certificate for the Attachment Daemon to file {} ...'\
+      .format(servercertfile))
 try :
-  with open(servercertfile, "wt") as fd :
+  with open(servercertfile, "wt") as fd :    # fd is a _io.TextIOWrapper
     fd.write(key_pem)
   with open(servercertfile, "at") as fd :
     fd.write(CAcert_pem)
 except Exception as ex:
-  msg = ('Error 30: I cannot write into private key file {}\n'\
+  msg = ('Error 30: I cannot write into the root certificate file {}\n'\
          '          Reason: {}\n'\
-         '          Have you declared the directory?')\
+         '          Is there a previous root certificate in this file?\n'\
+         '          You must remove that file yourself.  I do not do it.')\
          .format(servercertfile, ex)
   print(msg) ; exit(1)
+
+# Set owner and permissions for root certificate
+try :
+  with pathlib.Path(servercertfile) as f :   # f is a PosixPath
+    os.chown(servercertfile, default_uid, default_gid)  # Set ownership
+    f.chmod(root_perms)                      # Leading 0o for octal permissions
+except Exception as ex:
+  msg = ('Error 31: I cannot set ownership {}:{} and permissions {}\n'\
+         '          on the root certificate file {}\n'\
+         '          Reason: {}\n')\
+         .format(default_user, default_group, oct(root_perms), servercertfile, ex)
+  print(msg) ; exit(1)
 print('This file must be protected.  E.g. do not make it world readable.')
-print('Suggested owner is {}:root with permissions 660.'.format(default_user))
+print('Current owner is {}:{} with permissions {}.'\
+      .format(default_user, default_group, oct(root_perms)))
+
 
 # Write user certificate for client to disk
-print('\nWriting user certificate for client to file {} ...'.format(clientcertfile))
+print('\nWriting user certificate for client to file {} ...'\
+      .format(clientcertfile))
 try :
   with open(clientcertfile, "wt") as fd :
     fd.write(CAcert_pem)
 except Exception as ex :
   msg = ('Error 40: I cannot write into public key file {}\n'\
          '          Reason: {}\n'\
-         '          Have you declared the directory?')\
+         '          Is there a previous client certificate in this file?\n'\
+         '          You must remove that file yourself.  I do not do it.')\
          .format(clientcertfile, ex)
   print(msg) ; exit(1)
-print('The user (i.e. client) certificate should be installed in all monitors.')
-print('Suggested owner is {}:root with permissions 644.\n'.format(default_user))
+
+# Set owner and permissions for user certificate
+try :
+  with pathlib.Path(clientcertfile) as f :   # f is a PosixPath
+    os.chown(clientcertfile, default_uid, default_gid)  # Set ownership
+    f.chmod(client_perms)                    # Leading 0o for octal permission
+except Exception as ex:
+  msg = ('Error 41: I cannot set ownership {}:{} and permissions {}\n'\
+         '          on the client certificate file {}\n'\
+         '          Reason: {}\n')\
+         .format(default_user, default_group, oct(client_perms), clientcertfile, ex)
+  print(msg) ; exit(1)
+print('The user (i.e. client) certificate should be installed in all Management Daemons.')
+print('Current owner is {}:{} with permissions {}.\n'\
+      .format(default_user, default_group, oct(client_perms)))
 
 exit(0)
 

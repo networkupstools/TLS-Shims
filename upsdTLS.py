@@ -1,4 +1,4 @@
-#!/usr/local/bin/python3.8 -u
+#!/usr/bin/python3 -u
 # upsdTLS Provide up to date TLS access to upsd
 # Copyright (C) 2020 Roger Price. GPL v3 or later at your choice.
 '''upsdTLS: Shim daemon provides up to date TLS access to upsd'''
@@ -12,13 +12,15 @@ Version='1.2'
 # Version 1.2 Changes:
 # 2021-05-06 RP Rewrote recv_response to be protocol aware
 # 2021-05-11 RP Fixed malicious STARTTLS security hole
+# 2021-08-19 RP Debian 11 uses /usr/bin/python3, v 3.9
 
 # We need some library stuff
 import argparse, datetime, getpass, inspect, os, pathlib, pwd
 import re, signal, select, socket, ssl, subprocess, sys, syslog, time
-if sys.version_info[0] >= 3 and sys.version_info[1] >= 5 : pass
+if   sys.version_info[0] >= 4 : pass
+elif sys.version_info[0] == 3 and sys.version_info[1] >= 6 : pass
 else :
-  msg='\tMessage 200: This program requires Python version 3.5 or later.\n'\
+  msg='\tMessage 200: This program requires Python version 3.6 or later.\n'\
       '\tYou are using version {}.'\
       .format(sys.version.replace('\n',' '))
   print(msg, file=sys.stderr, flush=True)
@@ -92,25 +94,31 @@ def date_time_µsec () :
   if m : return '{} {}.{}'.format(m.group(1), m.group(2), m.group(3))
   else : return '{} {}.{}'.format(None, None, None)
 
-# date_time      Local time in ISO format       2019-09-09 17:35:53
+# date_time      Local date and time in ISO format  2019-09-09 17:35:53
 def date_time () :
   m = re.match(r'([0-9-]+)[A-Z]([0-9:]+)\..*',datetime.datetime.now().isoformat())
   if m : return '{} {}'.format(m.group(1), m.group(2))
   else : return '{} {}'.format(None, None)
 
-# date           Local day in ISO format        2019-09-09
+# date           Local day in ISO format            2019-09-09
 def date () :
   m = re.match(r'([0-9-]+)[A-Z]([0-9:]+)\..*',datetime.datetime.now().isoformat())
   if m : return '{}'.format(m.group(1))
   else : return '{}'.format(None)
 
-# System time including microseconds            2019-09-09.968428
+# tod            Local time in ISO format           17:35:53
+def tod () :
+  m = re.match(r'([0-9-]+)[A-Z]([0-9:]+)\..*',datetime.datetime.now().isoformat())
+  if m : return '{}'.format(m.group(2))
+  else : return '{}'.format(None)
+
+# System time including microseconds                2019-09-09.968428
 def time_µsec () :
   m = re.match(r'([0-9-]+)[A-Z]([0-9:]+)\.([0-9][0-9][0-9]).*',datetime.datetime.now().isoformat())
   if m : return '{}.{}'.format(m.group(2), m.group(3))
   else : return '{}.{}'.format(None, None)
 
-# System time in microseconds                    968428
+# System time in microseconds                       968428
 def µsec () :
   m = re.match(r'([0-9-]+)[A-Z]([0-9:]+)\.([0-9][0-9][0-9]).*',datetime.datetime.now().isoformat())
   if m : return '{}'.format(m.group(3))
@@ -227,7 +235,7 @@ def logger (l, d=0) :
   # And now, the logging action
   if debug >= d :
     # Friendly prefix for messages to the log file
-    msg = '{} {} {}\n'.format(time_µsec(), fnl(), new_inode_flag+l)
+    msg = '{} {} {}\n'.format(tod(), fnl(), new_inode_flag+l)
     try :
       rc = log.write(msg)                 # Ensure data recorded on disk in case we use kill
       log.flush()                         # to stop the daemon.
@@ -880,8 +888,8 @@ argparser = argparse.ArgumentParser(
 argparser.add_argument('-D', '--debug',  action='count', default=0,
                        help='Increase the debugging level, may be repeated.')
 argparser.add_argument('-s', '--servercertfile',      nargs=1, type=arg_file_r,
-                       default=etc_dir+'mkNUTcert/'+hostname+'.cert.pem',
-                       help='Certificate file, points to root CA certificate key %(default)s',
+                       default=etc_dir+hostname+'.cert.pem',
+                       help='Certificate file, points to root certificate (private key) %(default)s',
                        metavar='<file>')
 argparser.add_argument('--listen',       nargs=2, type=arg_listen,
                        default=('127.0.0.1', 401),
@@ -902,8 +910,8 @@ argparser.add_argument('-l', '--logfile',      nargs=1, type=arg_file_a,
                        default='/var/log/NUT.log',
                        help='Log file, default %(default)s',
                        metavar='<file>')
-argparser.add_argument('--PIDFile',          nargs=1, type=str,
-                       default='/var/run/upsdTLS.pid',
+argparser.add_argument('--PIDfile',          nargs=1, type=str,
+                       default='/run/nut/upsdTLS.pid',
                        help='Pid file used by systemd, default %(default)s'\
                             ' Do not change this unless you know what you are doing.',
                        metavar='<file>')
@@ -940,7 +948,7 @@ debug = args.debug
 backlog        = args.backlog[0]        if isinstance(args.backlog, list)        else args.backlog
 servercertfile = args.servercertfile[0] if isinstance(args.servercertfile, list) else args.servercertfile
 log_file       = args.logfile[0]        if isinstance(args.logfile, list)        else args.logfile  # Change of variable -> log_file
-PIDFile        = args.PIDFile[0]        if isinstance(args.PIDFile, list)        else args.PIDFile
+PIDfile        = args.PIDfile[0]        if isinstance(args.PIDfile, list)        else args.PIDfile
 maxconn        = args.maxconn[0]        if isinstance(args.maxconn, list)        else args.maxconn
 upsdport       = args.upsdport[0]       if isinstance(args.upsdport, list)       else args.upsdport
 upsdtimeout    = args.upsdtimeout[0]    if isinstance(args.upsdtimeout, list)    else args.upsdtimeout
@@ -960,7 +968,9 @@ msg = '{} Version {}, Python version {}'\
 logger(msg) ; syslogger(msg)
 logger('nodename={} OS_id={} sysname={} release={} machine={}'\
        .format(os.uname().nodename, OS_id, os.uname().sysname, os.uname().release, os.uname().machine))
-msg = 'ssl.OPENSSL_VERSION {}'.format(ssl.OPENSSL_VERSION)
+
+protocol_number = ssl.PROTOCOL_TLS_CLIENT     # Use highest possible, requires Python 3.6
+msg = 'Will use {} ssl.PROTOCOL_TLS_CLIENT = {}'.format(ssl.OPENSSL_VERSION, protocol_number)
 logger(msg) ; syslogger(msg)
 logger('This log file: {}, owner is {} with UID = {}, GID = {}'\
        .format(log_file, calling_user[0], calling_user[2], calling_user[3]))
@@ -1192,16 +1202,16 @@ if fork :
     cleanup() ; exit (1)
   if child_pid > 0 :                         # Parent process receives child's PID
     # Write child's PID to file for systemd to enjoy.
-    logger('{} Message 424: Writing child PID {} to file {}'.format(fnl(), child_pid, PIDFile))
+    logger('{} Message 424: Writing child PID {} to file {}'.format(fnl(), child_pid, PIDfile))
     try :
-      with open(PIDFile, 'wt') as PID_fd :
+      with open(PIDfile, 'wt') as PID_fd :     # Open new file in text mode 
         PID_fd.write('{}'.format(child_pid))   # write likes strings, not integers
         PID_fd.close()
     except Exception as ex :
       msg=('{} Error 425: Unable to create PID file {}\n'\
            +tab+'Reason: {}\n'
            +tab+'Exiting ...')\
-           .format(blob, PIDFile, ex)
+           .format(blob, PIDfile, ex)
       logger(msg); eprinter(msg)
       cleanup() ; exit (1)
     msg = ('{} Message 420: Parent says: child {} forked ...\n'\
